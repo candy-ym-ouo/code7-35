@@ -29,7 +29,20 @@ const envSchema = z.object({
   SMTP_SECURE: z.string().default("false").transform((value) => value === "true"),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
-  MAIL_FROM: z.string().default("公共空间细节地图 <noreply@example.test>")
-});
+  MAIL_FROM: z.string().default("公共空间细节地图 <noreply@example.test>"),
+  // A lease must outlive any single SMTP send. Otherwise a send still in flight
+  // could be reconciled as ambiguous and delivered again by another instance.
+  OUTBOX_LEASE_SECONDS: z.coerce.number().int().positive().default(120),
+  OUTBOX_SMTP_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  // Outcomes that do not prove non-delivery (mid-session timeout/disconnect,
+  // crashed worker) may be replayed at most this many times with the same
+  // delivery identity, after which the event is parked for reconciliation.
+  OUTBOX_MAX_AMBIGUOUS: z.coerce.number().int().min(0).default(2),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().default(20)
+}).refine(
+  (value) => value.OUTBOX_LEASE_SECONDS * 1000 > value.OUTBOX_SMTP_TIMEOUT_MS,
+  { message: "OUTBOX_LEASE_SECONDS must exceed OUTBOX_SMTP_TIMEOUT_MS / 1000" }
+);
 
 export const config = envSchema.parse(process.env);

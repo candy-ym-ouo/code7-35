@@ -1,82 +1,52 @@
-import nodemailer from "nodemailer";
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { config } from "./config";
 import { pool } from "./db";
+import { createSmtpMailer, messageIdDomain } from "./outbox/mailer";
+import { deliverClaimedEvent } from "./outbox/machine";
+import { createOutboxStore } from "./outbox/store";
 
-const transporter = nodemailer.createTransport({
+// Identity of this worker instance. Leases are only meaningful if every
+// instance claims events under a distinct owner id.
+const ownerId = `worker-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
+
+const store = createOutboxStore(pool, { leaseSeconds: config.OUTBOX_LEASE_SECONDS });
+
+const mailer = createSmtpMailer({
   host: config.SMTP_HOST,
   port: config.SMTP_PORT,
   secure: config.SMTP_SECURE,
-  auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASSWORD } : undefined
+  user: config.SMTP_USER,
+  password: config.SMTP_PASSWORD,
+  from: config.MAIL_FROM,
+  timeoutMs: config.OUTBOX_SMTP_TIMEOUT_MS
 });
 
-type OutboxEvent = {
-  id: string;
-  payload: { to: string; subject: string; text: string; html: string };
-  attempts: number;
-};
+const messageIdDomainValue = messageIdDomain(config.MAIL_FROM);
 
-export async function recoverStuckOutbox(): Promise<void> {
-  await pool.query(
-    `UPDATE outbox_events
-     SET status = 'pending', available_at = now(), last_error = 'Recovered after worker timeout', updated_at = now()
-     WHERE status = 'processing' AND updated_at < now() - interval '10 minutes'`
-  );
-}
-
+// Events are claimed one at a time with their own lease, so a slow SMTP send
+// can never expire a shared batch lease while another instance is still working.
 export async function dispatchOutbox(eventId?: string): Promise<void> {
-  const result = await pool.query<OutboxEvent>(
-    `WITH claimed AS (
-       SELECT id FROM outbox_events
-       WHERE status = 'pending'
-         AND available_at <= now()
-         AND ($1::uuid IS NULL OR id = $1::uuid)
-       ORDER BY created_at
-       FOR UPDATE SKIP LOCKED
-       LIMIT 20
-     )
-     UPDATE outbox_events o
-     SET status = 'processing', updated_at = now()
-     FROM claimed
-     WHERE o.id = claimed.id
-     RETURNING o.id, o.payload, o.attempts`,
-    [eventId ?? null]
-  );
-
-  for (const event of result.rows) {
+  const limit = eventId ? 1 : config.OUTBOX_BATCH_SIZE;
+  for (let dispatched = 0; dispatched < limit; dispatched += 1) {
+    const event = await store.claimNext({ ownerId, eventId });
+    if (!event) return;
     try {
-      await transporter.sendMail({
-        from: config.MAIL_FROM,
-        to: event.payload.to,
-        subject: event.payload.subject,
-        text: event.payload.text,
-        html: event.payload.html
-      });
-      await pool.query(
-        `UPDATE outbox_events
-         SET status = 'processed', processed_at = now(), last_error = NULL,
-             payload = '{"delivered":true}'::jsonb, updated_at = now()
-         WHERE id = $1`,
-        [event.id]
+      await deliverClaimedEvent(
+        {
+          store,
+          mailer,
+          maxAttempts: config.OUTBOX_MAX_ATTEMPTS,
+          maxAmbiguous: config.OUTBOX_MAX_AMBIGUOUS,
+          messageIdDomain: messageIdDomainValue,
+          log: (name, details) => console.error({ ...details }, name)
+        },
+        event
       );
     } catch (error) {
-      const attempts = event.attempts + 1;
-      const failed = attempts >= 5;
-      await pool.query(
-        `UPDATE outbox_events
-         SET status = $2,
-             attempts = $3,
-             available_at = now() + ($4::text || ' seconds')::interval,
-             last_error = $5,
-             updated_at = now()
-         WHERE id = $1`,
-        [
-          event.id,
-          failed ? "failed" : "pending",
-          attempts,
-          String(Math.min(300, 2 ** attempts)),
-          error instanceof Error ? error.message.slice(0, 1000) : "Unknown mail error"
-        ]
-      );
+      // The event keeps its lease and becomes replayable only after it expires;
+      // the next claim reconciles the interrupted 'sending' attempt.
+      console.error({ eventId: event.id, error }, "outbox delivery interrupted");
     }
   }
 }

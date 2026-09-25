@@ -28,6 +28,18 @@ describe("initial migration", () => {
     expect(followup).toContain("updated_at timestamptz");
   });
 
+  it("adds idempotent delivery claims and the attempt ledger in migration 0003", () => {
+    const followup = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../migrations/0003_outbox_idempotent_delivery.sql"),
+      "utf8"
+    );
+    for (const column of ["delivery_key", "claimed_by", "claim_token", "lease_expires_at", "ambiguous_count"]) {
+      expect(followup).toContain(column);
+    }
+    expect(followup).toContain("CREATE TABLE outbox_delivery_attempts");
+    expect(followup).toContain("UNIQUE (event_id, attempt_no)");
+  });
+
   it("uses PostGIS geography points and spatial indexes", () => {
     expect(migration).toContain("geography(Point, 4326)");
     expect(migration).toContain("USING gist (geom)");

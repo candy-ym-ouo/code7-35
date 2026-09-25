@@ -3,7 +3,7 @@ import IORedis from "ioredis";
 import { config } from "./config";
 import { pool } from "./db";
 import { processMediaJob, cleanupOriginalMedia, cleanupDeletedMediaObjects, markStaleFeatures, recoverStuckMedia, markUnreferencedMediaDeleted } from "./media-job";
-import { dispatchOutbox, recoverStuckOutbox } from "./outbox";
+import { dispatchOutbox } from "./outbox";
 import { purgeDeletedAccounts } from "./account-job";
 
 const redisOptions = { maxRetriesPerRequest: null } as const;
@@ -48,7 +48,7 @@ async function maintenanceTick() {
   if (maintenanceRunning) return;
   maintenanceRunning = true;
   try {
-    await recoverStuckOutbox();
+    // Expired-lease events are picked up by the claim query itself.
     await dispatchOutbox();
     const stuckMedia = await recoverStuckMedia();
     for (const mediaId of stuckMedia) {

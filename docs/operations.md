@@ -18,6 +18,7 @@
 - `manual_review` 媒体队列长度。
 - `pending` 内容与评论队列长度。
 - outbox `pending`、`failed` 数量。
+- `outbox_deliveries` 中 `sending` 超过 10 分钟未确认的数量（应被恢复流程自动收敛并记录 `outbox.delivery.finalized` 审计）。
 - `delete_after <= now()` 的原图数量。
 - 公开桶中是否存在未被数据库引用的对象。
 

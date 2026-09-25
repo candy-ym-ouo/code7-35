@@ -42,11 +42,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   ]);
 }
 
-let maintenanceRunning = false;
+let maintenanceInFlight: Promise<void> | null = null;
 
-async function maintenanceTick() {
-  if (maintenanceRunning) return;
-  maintenanceRunning = true;
+async function runMaintenance(): Promise<void> {
   try {
     await recoverStuckOutbox();
     await dispatchOutbox();
@@ -65,9 +63,14 @@ async function maintenanceTick() {
     await purgeDeletedAccounts();
   } catch (error) {
     console.error({ error }, "maintenance tick failed");
-  } finally {
-    maintenanceRunning = false;
   }
+}
+
+function maintenanceTick(): Promise<void> {
+  maintenanceInFlight ??= runMaintenance().finally(() => {
+    maintenanceInFlight = null;
+  });
+  return maintenanceInFlight;
 }
 
 await maintenanceTick();
@@ -77,6 +80,9 @@ maintenanceTimer.unref();
 async function shutdown(signal: string) {
   console.log(`worker shutting down: ${signal}`);
   clearInterval(maintenanceTimer);
+  // Let an in-flight maintenance pass confirm its deliveries before closing,
+  // shrinking the crash-before-confirm window on deploys.
+  await maintenanceInFlight;
   await Promise.all([mediaWorker.close(), outboxWorker.close(), mediaQueue.close()]);
   for (const connection of [queueConnection, mediaWorkerConnection, outboxWorkerConnection]) {
     if (connection.status !== "end") connection.disconnect();

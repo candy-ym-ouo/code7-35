@@ -36,6 +36,26 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/**
+ * Deterministic idempotency key for an outbox event. Every replay recomputes
+ * the same key from the event id, so the delivery journal can deduplicate
+ * sends across worker crashes and instances.
+ */
+export function outboxIdempotencyKey(eventId: string): string {
+  return `outbox:${eventId}`;
+}
+
+/**
+ * Deterministic SMTP Message-ID for an outbox event. Replays of the same event
+ * always produce the same identifier, so MTA/mailbox-level deduplication can
+ * suppress repeats. The domain is derived from the configured MAIL_FROM.
+ */
+export function outboxMessageId(eventId: string, mailFrom: string): string {
+  const match = mailFrom.match(/@([A-Za-z0-9.-]+)\s*>?\s*$/);
+  const domain = match?.[1] ?? "localhost";
+  return `<outbox.${eventId}@${domain}>`;
+}
+
 export function parseInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) ? parsed : fallback;

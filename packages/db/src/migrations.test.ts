@@ -28,6 +28,18 @@ describe("initial migration", () => {
     expect(followup).toContain("updated_at timestamptz");
   });
 
+  it("adds the outbox delivery journal in migration 0003", () => {
+    const followup = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../migrations/0003_outbox_deliveries.sql"),
+      "utf8"
+    );
+    expect(followup).toContain("CREATE TABLE outbox_deliveries");
+    expect(followup).toContain("idempotency_key text NOT NULL UNIQUE");
+    expect(followup).toContain("claimed_by");
+    expect(followup).toContain("'sending'");
+    expect(followup).toContain("REFERENCES outbox_events(id)");
+  });
+
   it("uses PostGIS geography points and spatial indexes", () => {
     expect(migration).toContain("geography(Point, 4326)");
     expect(migration).toContain("USING gist (geom)");

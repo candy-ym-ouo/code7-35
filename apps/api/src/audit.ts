@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { outboxIdempotencyKey } from "@map/shared/server";
 
 export async function recordAudit(
   client: PoolClient,
@@ -38,7 +39,15 @@ export async function queueOutbox(
      RETURNING id`,
     [input.eventType, input.aggregateType, input.aggregateId, JSON.stringify(input.payload)]
   );
-  return result.rows[0]!.id;
+  const eventId = result.rows[0]!.id;
+  // The delivery journal is created in the same transaction. It is the durable
+  // idempotency record the worker uses to avoid duplicate sends after crashes.
+  await client.query(
+    `INSERT INTO outbox_deliveries(event_id, idempotency_key)
+     VALUES ($1, $2)`,
+    [eventId, outboxIdempotencyKey(eventId)]
+  );
+  return eventId;
 }
 
 export async function createNotification(
